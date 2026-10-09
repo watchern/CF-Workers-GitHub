@@ -4,14 +4,14 @@
 github release、archive以及项目文件的加速项目，支持clone，Cloudflare Workers & Pages 版本
 
 > [!CAUTION]
-> **Github.fxxk.dedyn.io 已被GFW污染，生产环境建议自行部署服务。**
+> **xxxx.dedyn.io 已被GFW污染，生产环境建议自行部署服务。**
 
 > [!WARNING]
 > 项目可能会触发**疑似钓鱼网站**警告或域名封禁，请通过环境变量 `URL` 赋值 **nginx** 或 `URL302` 设置302跳转域名进行伪装。
 
 ## 🚀 使用
 
-直接在copy出来的url前加`https://github.fxxk.dedyn.io/`即可
+直接在copy出来的url前加`https://gh.llim.qzz.io/`即可
 
 也可以直接访问，在input输入
 
@@ -19,19 +19,19 @@ github release、archive以及项目文件的加速项目，支持clone，Cloudf
 
 访问私有仓库可以通过
 
-`git clone https://user:TOKEN@github.fxxk.dedyn.io/https://github.com/xxxx/xxxx` [#71](https://github.com/hunshcn/gh-proxy/issues/71)
+`git clone https://user:TOKEN@gh.llim.qzz.io/https://github.com/xxxx/xxxx` [#71](https://github.com/hunshcn/gh-proxy/issues/71)
 
 以下都是合法输入（仅示例，文件不存在）：
 
-- 分支源码：https://github.com/hunshcn/project/archive/master.zip
+- 分支源码：https://github.com/user/project/archive/master.zip
 
-- release源码：https://github.com/hunshcn/project/archive/v0.1.0.tar.gz
+- release源码：https://github.com/user/project/archive/v0.1.0.tar.gz
 
-- release文件：https://github.com/hunshcn/project/releases/download/v0.1.0/example.zip
+- release文件：https://github.com/user/project/releases/download/v0.1.0/example.zip
 
-- 分支文件：https://github.com/hunshcn/project/blob/master/filename
+- 分支文件：https://github.com/user/project/blob/master/filename
 
-- commit文件：https://github.com/hunshcn/project/blob/1111111111111111111111111111/filename
+- commit文件：https://github.com/user/project/blob/1111111111111111111111111111/filename
 
 - gist：https://gist.githubusercontent.com/cielpy/351557e6e465c12986419ac5a4dd2568/raw/cmd.py
 
@@ -44,14 +44,14 @@ github release、archive以及项目文件的加速项目，支持clone，Cloudf
 ### 2️⃣ 给 Pages绑定 自定义域：
    - 在 Pages控制台的 `自定义域`选项卡，下方点击 `设置自定义域`。
    - 填入你的自定义次级域名，注意不要使用你的根域名，例如：
-     您分配到的域名是 `fxxk.dedyn.io`，则添加自定义域填入 `github.fxxk.dedyn.io`即可；
-   - 按照 Cloudflare 的要求将返回你的域名DNS服务商，添加 该自定义域 `github`的 CNAME记录 `CF-Workers-GitHub.pages.dev` 后，点击 `激活域`即可。
+     您分配到的域名是 `llim.qzz.io`，则添加自定义域填入 `gh.llim.qzz.io`即可；
+   - 按照 Cloudflare 的要求将返回你的域名DNS服务商，添加 该自定义域 `gh`的 CNAME记录 `xxxxx.pages.dev` 后，点击 `激活域`即可。
 
 ## 👷 Workers 部署方法
 ### ☁️ 部署 Cloudflare Worker：
 
    - 在 Cloudflare Worker 控制台中创建一个新的 Worker。
-   - 将 [_worker.js](https://github.com/cmliu/CF-Workers-GitHub/blob/main/_worker.js)  的内容粘贴到 Worker 编辑器中。
+   - 将 [_worker.js](https://github.com/watchern/CF-Workers-GitHub/blob/main/_worker.js)  的内容粘贴到 Worker 编辑器中。
 
 ## 🔧 变量说明
 | 变量名 | 示例 | 必填 | 备注 |

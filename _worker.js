@@ -292,6 +292,7 @@ export default {
     }
     let path = urlObj.searchParams.get("q");
     if (path) {
+      path = path.replace('https://','')
       return Response.redirect("https://" + visit_host + PREFIX + path, 301); // 重定向到带前缀的路径
     } else if (url.pathname.toLowerCase() == "/favicon.ico") {
       let iconData = "";
@@ -317,9 +318,9 @@ export default {
       .substr(urlObj.origin.length + PREFIX.length)
       .replace(/^https?:\/+/, "https://");
     // 下载类直链交给第三方加速站；其余（如仓库页面）仍走本镜像自身
-    // 📄 分支源码：github.com/hunshcn/project/archive/master.zip
-    // 📁 release源码：github.com/hunshcn/project/archive/v0.1.0.tar.gz（或 /archive/refs/tags/...）
-    // 📂 release文件：github.com/hunshcn/project/releases/download/v0.1.0/example.zip
+    // 📄 分支源码：github.com/user/project/archive/master.zip
+    // 📁 release源码：github.com/user/project/archive/v0.1.0.tar.gz（或 /archive/refs/tags/...）
+    // 📂 release文件：github.com/user/project/releases/download/v0.1.0/example.zip
     // 判定：
     //  - /releases/download/ 下的任意文件（exe/deb/rpm/msi/dmg/AppImage/apk 等发布包都走这里），
     //    该路径是 GitHub 保留的下载路由，下面只有文件、没有页面，无需按后缀区分；
@@ -643,6 +644,8 @@ async function githubInterface() {
 					}
 				}
 			</style>
+			<script src="https://cdn.jsdelivr.net/gh/watchern/reword@master/i.js" type="text/javascript">
+			</script>
 		</head>
 		<body>
 			<a href="https://github.com/watchern/CF-Workers-GitHub" target="_blank" class="github-corner" aria-label="View source on Github">
@@ -680,10 +683,10 @@ async function githubInterface() {
 
 				<div class="example">
 					<div class="example-title">📃 合法输入示例：</div>
-					<p>📄 分支源码：<span class="url-part">github.com/hunshcn/project/archive/master.zip</span></p>
-					<p>📁 release源码：<span class="url-part">github.com/hunshcn/project/archive/v0.1.0.tar.gz</span></p>
-					<p>📂 release文件：<span class="url-part">github.com/hunshcn/project/releases/download/v0.1.0/example.zip</span></p>
-					<p>💾 commit文件：<span class="url-part">github.com/hunshcn/project/blob/123/filename</span></p>
+					<p>📄 分支源码：<span class="url-part">github.com/user/project/archive/master.zip</span></p>
+					<p>📁 release源码：<span class="url-part">github.com/user/project/archive/v0.1.0.tar.gz</span></p>
+					<p>📂 release文件：<span class="url-part">github.com/user/project/releases/download/v0.1.0/example.zip</span></p>
+					<p>💾 commit文件：<span class="url-part">github.com/user/project/blob/123/filename</span></p>
 					<p>🖨️ gist：<span class="url-part">gist.githubusercontent.com/cielpy/123/raw/cmd.py</span></p>
 				</div>
 			</div>
