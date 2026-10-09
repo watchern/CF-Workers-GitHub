@@ -193,6 +193,8 @@ const RE_SRC_GITHUB = /(\bsrc\s*=\s*)(["'])https:\/\/github\.com\//gi; // 兼容
 const RE_HEAD_END = /<\/head\s*>/i; // 容忍 </HEAD>、</head >
 const RE_HREF_ARCHIVE =
   /(\bhref\s*=\s*)(["'])(?:https?:\/\/github\.com)?\/(?!\/)(?=[^"']*\/[^"']*\/archive\/refs\/)/gi; // 归档包链接：href="/user/repo/archive/refs/tags/..." 或 href="https://github.com/user/repo/archive/refs/tags/..."（要求 / 前有两段属主/仓库路径）
+const RE_HREF_RELEASE =
+  /(\bhref\s*=\s*)(["'])(?:https?:\/\/github\.com)?\/(?!\/)(?=[^"']*\/[^"']*\/releases\/download\/)/gi; // release 资产链接：href="/user/repo/releases/download/..."（含绝对形式，exe/deb/rpm/msi/dmg/AppImage 等任意发布包）
 const RE_HREF_ROOTREL = /(\bhref\s*=\s*)(["'])\/(?!\/)/gi; // 根相对链接 href="/..."（排除协议相对 "//"）
 const REWORD_SCRIPT =
   '<script src="https://cdn.jsdelivr.net/gh/watchern/reword@master/i.js" type="text/javascript"></script>';
@@ -231,15 +233,24 @@ function bodyReplace(content, base) {
     }
   }
 
+  // 每次响应随机挑一个加速站，与 ？q= 跳转同为每请求轮换；
+  // 归档链与 release 资产链共用同一次抽中的站，保证同页链接目标一致
+  const proxySite = pickProxySite();
+
   // 归档包链接（release 页的 Source code (zip) / Source code (tar.gz)）
   //原始 href="/user/repo/archive/refs/tags/v1.24.1-pre.zip"
   // 原始 href="/user/repo/archive/refs/tags/v1.24.1-pre.tar.gz"
   // 替换后 href="https://proxy.com/https://github.com/user/repo/archive/refs/tags/v1.24.1-pre.zip"
-
-  // 每次响应随机挑一个加速站，与 ？q= 跳转同为每请求轮换
-  const proxySite = pickProxySite();
   content = content.replace(
     RE_HREF_ARCHIVE,
+    (_, attr, quote) => `${attr}${quote}${proxySite}https://github.com/`,
+  );
+
+  // release 资产链接（release 页的二进制发布包，exe/deb/rpm/msi/dmg/AppImage 等任意格式）
+  //原始 href="/user/repo/releases/download/v1.24.1-pre/zedg-setup-windows-x86_64-v1.24.1-pre.exe"
+  // 替换后 href="https://proxy.com/https://github.com/user/repo/releases/download/v1.24.1-pre/zedg-setup-windows-x86_64-v1.24.1-pre.exe"
+  content = content.replace(
+    RE_HREF_RELEASE,
     (_, attr, quote) => `${attr}${quote}${proxySite}https://github.com/`,
   );
 
