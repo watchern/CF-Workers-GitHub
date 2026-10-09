@@ -11,6 +11,19 @@ const Config = {
 };
 // 获取当前访问的域名
 let visit_host = "";
+const PROXY_SITES = [
+  "https://gh-proxy.org/",
+  "https://v4.gh-proxy.org/",
+  "https://v6.gh-proxy.org/",
+  "https://cdn.gh-proxy.org/",
+  "https://axisnow.gh-proxy.org/",
+];
+// 每次调用随机挑一个加速站：在 fetch 与 bodyReplace 内调用，实现每请求轮换，
+// 而不是每个实例冷启动时定死一个
+function pickProxySite() {
+  return PROXY_SITES[Math.floor(Math.random() * PROXY_SITES.length)] || "";
+}
+
 // ---------------配置信息-------------
 
 const whiteList = []; // 白名单，路径中包含白名单字符的请求才会通过，例如 ['/username/']
@@ -178,6 +191,9 @@ async function proxy(urlObj, reqInit) {
 const RE_HTML_DOCTYPE = /<!doctype\s+html/i; // 完整 HTML 文档判定（容忍大小写与空白）
 const RE_SRC_GITHUB = /(\bsrc\s*=\s*)(["'])https:\/\/github\.com\//gi; // 兼容大小写与单/双引号
 const RE_HEAD_END = /<\/head\s*>/i; // 容忍 </HEAD>、</head >
+const RE_HREF_ARCHIVE =
+  /(\bhref\s*=\s*)(["'])(?:https?:\/\/github\.com)?\/(?!\/)(?=[^"']*\/[^"']*\/archive\/refs\/)/gi; // 归档包链接：href="/user/repo/archive/refs/tags/..." 或 href="https://github.com/user/repo/archive/refs/tags/..."（要求 / 前有两段属主/仓库路径）
+const RE_HREF_ROOTREL = /(\bhref\s*=\s*)(["'])\/(?!\/)/gi; // 根相对链接 href="/..."（排除协议相对 "//"）
 const REWORD_SCRIPT =
   '<script src="https://cdn.jsdelivr.net/gh/watchern/reword@master/i.js" type="text/javascript"></script>';
 const REWORD_MARK = "cdn.jsdelivr.net/gh/watchern/reword"; // 幂等判断标记
@@ -189,21 +205,50 @@ const REWORD_MARK = "cdn.jsdelivr.net/gh/watchern/reword"; // 幂等判断标记
  * @returns {string}
  */
 function bodyReplace(content, base) {
-  if (!RE_HTML_DOCTYPE.test(content)) {
-    return content; // 非完整 HTML 文档，原样返回
+  const isFullDoc = RE_HTML_DOCTYPE.test(content);
+  // GitHub 的 expanded_assets 等 HTML 片段不带 <!DOCTYPE html>，
+  // 仅对包含 /releases/（资产列表）或 /archive/refs/（Source code 归档包，
+  // 见无二进制资产的 release）的片段做链接补全；其余原样返回
+  if (
+    !isFullDoc &&
+    !content.includes("/releases/") &&
+    !content.includes("/archive/refs/")
+  ) {
+    return content;
   }
 
-  //原始：src="https://github.com/user/repo/releases/download/v1.0/file.zip"
-  //替换后：src="https://example.com/https://github.com/user/repo/releases/download/v1.0/file.zip"
+  if (isFullDoc) {
+    //原始：src="https://github.com/user/repo/releases/download/v1.0/file.zip"
+    //替换后：src="https://example.com/https://github.com/user/repo/releases/download/v1.0/file.zip"
+    content = content.replace(
+      RE_SRC_GITHUB,
+      (_, attr, quote) => `${attr}${quote}${base}https://github.com/`,
+    );
+
+    // --- 引入打赏脚本（已注入则跳过，避免重复代理时叠加）----
+    if (!content.includes(REWORD_MARK)) {
+      content = content.replace(RE_HEAD_END, `${REWORD_SCRIPT}</head>`);
+    }
+  }
+
+  // 归档包链接（release 页的 Source code (zip) / Source code (tar.gz)）
+  //原始 href="/user/repo/archive/refs/tags/v1.24.1-pre.zip"
+  // 原始 href="/user/repo/archive/refs/tags/v1.24.1-pre.tar.gz"
+  // 替换后 href="https://proxy.com/https://github.com/user/repo/archive/refs/tags/v1.24.1-pre.zip"
+
+  // 每次响应随机挑一个加速站，与 ？q= 跳转同为每请求轮换
+  const proxySite = pickProxySite();
   content = content.replace(
-    RE_SRC_GITHUB,
-    (_, attr, quote) => `${attr}${quote}${base}https://github.com/`,
+    RE_HREF_ARCHIVE,
+    (_, attr, quote) => `${attr}${quote}${proxySite}https://github.com/`,
   );
 
-  // --- 引入打赏脚本（已注入则跳过，避免重复代理时叠加）----
-  if (!content.includes(REWORD_MARK)) {
-    content = content.replace(RE_HEAD_END, `${REWORD_SCRIPT}</head>`);
-  }
+  // 根相对链接（如 release 资产列表 expanded_assets 的 href="/user/repo/releases/download/..."）
+  // 补全为经镜像代理的绝对地址，否则会解析到镜像站自身路径导致断链
+  content = content.replace(
+    RE_HREF_ROOTREL,
+    (_, attr, quote) => `${attr}${quote}${base}https://github.com/`,
+  );
 
   return content;
 }
@@ -236,6 +281,28 @@ export default {
     }
     let path = urlObj.searchParams.get("q");
     if (path) {
+      // 下载类直链交给第三方加速站；其余（如仓库页面）仍走本镜像自身
+      // 📄 分支源码：github.com/hunshcn/project/archive/master.zip
+      // 📁 release源码：github.com/hunshcn/project/archive/v0.1.0.tar.gz（或 /archive/refs/tags/...）
+      // 📂 release文件：github.com/hunshcn/project/releases/download/v0.1.0/example.zip
+      // 判定：
+      //  - /releases/download/ 下的任意文件（exe/deb/rpm/msi/dmg/AppImage/apk 等发布包都走这里），
+      //    该路径是 GitHub 保留的下载路由，下面只有文件、没有页面，无需按后缀区分；
+      //  - /archive/ 只认 GitHub 自动生成的源码归档（zip/tar.gz/tgz/tar），
+      //    并排除 /blob/ /tree/ 等页面路由，避免仓库里恰好有 archive 目录时误判
+      const isProxyDownload =
+        /\/releases\/download\/.+/i.test(path) ||
+        (/\/archive\/.+$/i.test(path) &&
+          !/\/(?:blob|tree|blame|commits?|wiki)\//i.test(path) &&
+          /\.(?:zip|tar\.gz|tgz|tar)(?:[?#].*)?$/i.test(path));
+      if (isProxyDownload) {
+        // 补全协议前缀，避免加速站无法解析裸域名形式
+        if (!/^https?:\/\//i.test(path)) {
+          path = "https://" + path;
+        }
+        // 重定向到加速站；302 临时跳转，浏览器不缓存，重复点击可重新抽站
+        return Response.redirect(pickProxySite() + path, 302);
+      }
       return Response.redirect("https://" + visit_host + PREFIX + path, 301); // 重定向到带前缀的路径
     } else if (url.pathname.toLowerCase() == "/favicon.ico") {
       let iconData = "";
