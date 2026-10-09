@@ -281,28 +281,6 @@ export default {
     }
     let path = urlObj.searchParams.get("q");
     if (path) {
-      // 下载类直链交给第三方加速站；其余（如仓库页面）仍走本镜像自身
-      // 📄 分支源码：github.com/hunshcn/project/archive/master.zip
-      // 📁 release源码：github.com/hunshcn/project/archive/v0.1.0.tar.gz（或 /archive/refs/tags/...）
-      // 📂 release文件：github.com/hunshcn/project/releases/download/v0.1.0/example.zip
-      // 判定：
-      //  - /releases/download/ 下的任意文件（exe/deb/rpm/msi/dmg/AppImage/apk 等发布包都走这里），
-      //    该路径是 GitHub 保留的下载路由，下面只有文件、没有页面，无需按后缀区分；
-      //  - /archive/ 只认 GitHub 自动生成的源码归档（zip/tar.gz/tgz/tar），
-      //    并排除 /blob/ /tree/ 等页面路由，避免仓库里恰好有 archive 目录时误判
-      const isProxyDownload =
-        /\/releases\/download\/.+/i.test(path) ||
-        (/\/archive\/.+$/i.test(path) &&
-          !/\/(?:blob|tree|blame|commits?|wiki)\//i.test(path) &&
-          /\.(?:zip|tar\.gz|tgz|tar)(?:[?#].*)?$/i.test(path));
-      if (isProxyDownload) {
-        // 补全协议前缀，避免加速站无法解析裸域名形式
-        if (!/^https?:\/\//i.test(path)) {
-          path = "https://" + path;
-        }
-        // 重定向到加速站；302 临时跳转，浏览器不缓存，重复点击可重新抽站
-        return Response.redirect(pickProxySite() + path, 302);
-      }
       return Response.redirect("https://" + visit_host + PREFIX + path, 301); // 重定向到带前缀的路径
     } else if (url.pathname.toLowerCase() == "/favicon.ico") {
       let iconData = "";
@@ -327,6 +305,33 @@ export default {
     path = urlObj.href
       .substr(urlObj.origin.length + PREFIX.length)
       .replace(/^https?:\/+/, "https://");
+    // 下载类直链交给第三方加速站；其余（如仓库页面）仍走本镜像自身
+    // 📄 分支源码：github.com/hunshcn/project/archive/master.zip
+    // 📁 release源码：github.com/hunshcn/project/archive/v0.1.0.tar.gz（或 /archive/refs/tags/...）
+    // 📂 release文件：github.com/hunshcn/project/releases/download/v0.1.0/example.zip
+    // 判定：
+    //  - /releases/download/ 下的任意文件（exe/deb/rpm/msi/dmg/AppImage/apk 等发布包都走这里），
+    //    该路径是 GitHub 保留的下载路由，下面只有文件、没有页面，无需按后缀区分；
+    //  - /archive/ 只认 GitHub 自动生成的源码归档（zip/tar.gz/tgz/tar），
+    //    并排除 /blob/ /tree/ 等页面路由，避免仓库里恰好有 archive 目录时误判
+    const isProxyDownload =
+      /\/releases\/download\/.+/i.test(path) ||
+      (/\/archive\/.+$/i.test(path) &&
+        !/\/(?:blob|tree|blame|commits?|wiki)\//i.test(path) &&
+        /\.(?:zip|tar\.gz|tgz|tar)(?:[?#].*)?$/i.test(path));
+    if (isProxyDownload) {
+      // 补全成完整 GitHub 直链，避免加速站无法解析：
+      //  - 已带协议：原样；
+      //  - github.com 开头：补 https://；
+      //  - 裸 owner/repo 形式（镜像约定省略了 github.com）：补 https://github.com/
+      if (!/^https?:\/\//i.test(path)) {
+        path = /^github\.com\//i.test(path)
+          ? "https://" + path
+          : "https://github.com/" + path;
+      }
+      // 重定向到加速站；302 临时跳转，浏览器不缓存，重复点击可重新抽站
+      return Response.redirect(pickProxySite() + path, 302);
+    }
     if (
       path.search(exp1) === 0 ||
       path.search(exp5) === 0 ||
