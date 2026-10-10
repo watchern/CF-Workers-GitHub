@@ -208,7 +208,7 @@ const RE_HREF_ARCHIVE =
   /(\bhref\s*=\s*)(["'])(?:https?:\/\/github\.com)?\/(?!\/)(?=[^"']*\/[^"']*\/archive\/refs\/)/gi; // 归档包链接：href="/user/repo/archive/refs/tags/..." 或 href="https://github.com/user/repo/archive/refs/tags/..."（要求 / 前有两段属主/仓库路径）
 const RE_HREF_RELEASE =
   /(\bhref\s*=\s*)(["'])(?:https?:\/\/github\.com)?\/(?!\/)(?=[^"']*\/[^"']*\/releases\/download\/)/gi; // release 资产链接：href="/user/repo/releases/download/..."（含绝对形式，exe/deb/rpm/msi/dmg/AppImage 等任意发布包）
-const RE_HREF_ROOTREL = /(\bhref\s*=\s*)(["'])\/(?!\/)/gi; // 根相对链接 href="/..."（排除协议相对 "//"）
+const RE_HREF_ROOTREL = /(\bhref\s*=\s*)(["'])\/(?!\/)(?!manifest\.json\b)(?![^"']*\bmanifest\.json\?)/gi; // 根相对链接 href="/..."（排除协议相对 "//" 与站点自身应用清单 manifest.json）
 const REWORD_SCRIPT =
   '<script src="https://cdn.jsdelivr.net/gh/watchern/reword@master/i.js" type="text/javascript"></script>';
 // SPA 死链修正脚本：GitHub 是 SPA，局部刷新后新插入的链接会脱离镜像——
@@ -373,6 +373,27 @@ export default {
     if (path) {
       path = path.replace('https://','')
       return Response.redirect("https://" + visit_host + PREFIX + path, 301); // 重定向到带前缀的路径
+    } else if (url.pathname.toLowerCase() == "/manifest.json") {
+      // 站点自身的应用清单：GitHub 页面里的 <link rel="manifest" href="/manifest.json">
+      // 在服务端改写中已排除（RE_HREF_ROOTREL），不再被代理到 github.com；
+      // 这里提供一份合法清单，保证镜像站自身的 PWA 元数据可用
+      return new Response(
+        JSON.stringify({
+          name: "GitHub 文件加速",
+          short_name: "GitHub 加速",
+          start_url: "/",
+          display: "browser",
+          background_color: "#0d1117",
+          theme_color: "#0d1117",
+          icons: [],
+        }),
+        {
+          headers: {
+            "content-type": "application/manifest+json; charset=utf-8",
+            "cache-control": "public, max-age=86400",
+          },
+        },
+      );
     } else if (url.pathname.toLowerCase() == "/favicon.ico") {
       let iconData = "";
       iconData =
