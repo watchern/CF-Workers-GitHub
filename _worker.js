@@ -46,7 +46,8 @@ const PREFLIGHT_INIT = {
 
 const RE_GITHUB_REPO = /^(?:https?:\/\/)?github\.com\/.+?\/.*$/i;
 // 匹配 GitHub的项目地址，例如 https://github.com/watchern/CF-Workers-GitHub
-const RE_GITHUB_BLOB_RAW = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:blob|raw)\/.*$/i;
+const RE_GITHUB_BLOB_RAW =
+  /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:blob|raw)\/.*$/i;
 // 匹配 GitHub的blob或raw路径
 const RE_GIT_INFO = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:info|git-).*$/i;
 // 匹配 GitHub的info或git-路径
@@ -208,7 +209,8 @@ const RE_HREF_ARCHIVE =
   /(\bhref\s*=\s*)(["'])(?:https?:\/\/github\.com)?\/(?!\/)(?=[^"']*\/[^"']*\/archive\/refs\/)/gi; // 归档包链接：href="/user/repo/archive/refs/tags/..." 或 href="https://github.com/user/repo/archive/refs/tags/..."（要求 / 前有两段属主/仓库路径）
 const RE_HREF_RELEASE =
   /(\bhref\s*=\s*)(["'])(?:https?:\/\/github\.com)?\/(?!\/)(?=[^"']*\/[^"']*\/releases\/download\/)/gi; // release 资产链接：href="/user/repo/releases/download/..."（含绝对形式，exe/deb/rpm/msi/dmg/AppImage 等任意发布包）
-const RE_HREF_ROOTREL = /(\bhref\s*=\s*)(["'])\/(?!\/)(?!manifest\.json\b)(?![^"']*\bmanifest\.json\?)/gi; // 根相对链接 href="/..."（排除协议相对 "//" 与站点自身应用清单 manifest.json）
+const RE_HREF_ROOTREL =
+  /(\bhref\s*=\s*)(["'])\/(?!\/)(?!manifest\.json\b)(?![^"']*\bmanifest\.json\?)/gi; // 根相对链接 href="/..."（排除协议相对 "//" 与站点自身应用清单 manifest.json）
 const REWORD_SCRIPT =
   '<script src="https://cdn.jsdelivr.net/gh/watchern/reword@master/i.js" type="text/javascript"></script>';
 // SPA 死链修正脚本：GitHub 是 SPA，局部刷新后新插入的链接会脱离镜像——
@@ -217,55 +219,78 @@ const REWORD_SCRIPT =
 // MutationObserver 持续监听 + 定时兜底扫描，把两类都改写为经本镜像代理的绝对地址。
 // 按请求构造（BASE 依赖当前访问域名），标记属性用于幂等判断
 function buildSpaFixScript(base) {
-  return (
-    '<script ' +
-    SPA_FIX_MARK +
-    '>' +
-    '(function(){' +
-    'var BASE=' +
-    JSON.stringify(base) +
-    ';' +
-    'function fix(el,attr){' +
-    'var v=el.getAttribute(attr);' +
-    'if(!v)return;' +
-    'if(v.charCodeAt(0)===47){' +
-    'if(v.charCodeAt(1)===47||v.slice(0,14)==="/_next/static/")return;' +
-    'var f1=BASE+"https://github.com"+v;' +
-    'if(v!==f1)el.setAttribute(attr,f1);' +
-    'return;' +
-    '}' +
-    'if(v.slice(0,8)==="https://"||v.slice(0,7)==="http://"){' +
-    'var rest=v.slice(v.indexOf("/")+2);' +
-    'if(rest.slice(0,26)==="raw.githubusercontent.com/"||rest.slice(0,11)==="github.com/"){var f2=BASE+v;if(v!==f2)el.setAttribute(attr,f2);}' +
-    'return;' +
-    '}' +
-    '}' +
-    'function scan(root){' +
-    'if(!root.querySelectorAll)return;' +
-    'var i,imgs=root.querySelectorAll("img[src]");' +
-    'for(i=0;i<imgs.length;i++)fix(imgs[i],"src");' +
-    'var links=root.querySelectorAll("a[href]");' +
-    'for(i=0;i<links.length;i++)fix(links[i],"href");' + '}' +
-    'var mo=new MutationObserver(function(ms){' +
-    'for(var k=0;k<ms.length;k++){' +
-    'var m=ms[k],n,node;' +
-    'for(n=0;n<m.addedNodes.length;n++){' +
-    'node=m.addedNodes[n];' +
-    'if(node.nodeType===1){' +
-    'if(node.tagName==="IMG")fix(node,"src");' +
-    'if(node.tagName==="A")fix(node,"href");' +
-    'if(node.querySelectorAll)scan(node);' + '}' + '}' + '}' +
-    '});' +
-    'function start(){' +
-    'mo.observe(document.documentElement,{childList:true,subtree:true});' +
-    'scan(document);' +
-    'setInterval(function(){scan(document);},1500);' +
-    '}' +
-    'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",start);}' +
-    'else{start();}' +
-    '})();' +
-    '</script>'
-  );
+  // 模板字符串原样嵌入；内嵌脚本内不能出现反引号与 ${，新增逻辑时注意
+  return `<script ${SPA_FIX_MARK}>
+(function () {
+  // BASE：本镜像代理前缀（按请求注入当前访问域名）
+  var BASE = ${JSON.stringify(base)};
+
+  // 修正单个元素的属性值
+  function fix(el, attr) {
+    var v = el.getAttribute(attr);
+    if (!v) return;
+    // ① 相对路径：/xxx → BASE + "https://github.com/xxx"
+    if (v.charCodeAt(0) === 47) {
+      if (v.charCodeAt(1) === 47) return; // "//" 协议相对，不动
+      if (v.slice(0, 14) === "/_next/static/") return; // Next.js 静态资源，不动
+      var f1 = BASE + "https://github.com" + v;
+      if (v !== f1) el.setAttribute(attr, f1);
+      return;
+    }
+    // ② 绝对地址：raw.githubusercontent.com / github.com → 经镜像代理，避免点击脱走
+    if (v.slice(0, 8) === "https://" || v.slice(0, 7) === "http://") {
+      var rest = v.slice(v.indexOf("/") + 2);
+      var isRaw = rest.slice(0, 26) === "raw.githubusercontent.com/";
+      var isGh = rest.slice(0, 11) === "github.com/";
+      if (isRaw || isGh) {
+        var f2 = BASE + v;
+        if (v !== f2) el.setAttribute(attr, f2);
+      }
+      return;
+    }
+  }
+
+  // 需要扫描的元素与属性：img/a/script/link 的 src/href
+  var PAIRS = [["img", "src"], ["a", "href"], ["script", "src"], ["link", "href"]];
+
+  function scan(root) {
+    if (!root.querySelectorAll) return;
+    for (var p = 0; p < PAIRS.length; p++) {
+      var sel = PAIRS[p][0] + "[" + PAIRS[p][1] + "]";
+      var els = root.querySelectorAll(sel);
+      for (var i = 0; i < els.length; i++) fix(els[i], PAIRS[p][1]);
+    }
+  }
+
+  // SPA 局部刷新：新插入的节点立即修正（子树一并扫描）
+  var mo = new MutationObserver(function (mutations) {
+    for (var k = 0; k < mutations.length; k++) {
+      var added = mutations[k].addedNodes;
+      for (var n = 0; n < added.length; n++) {
+        var node = added[n];
+        if (node.nodeType !== 1) continue;
+        if (node.tagName === "IMG") fix(node, "src");
+        if (node.tagName === "A") fix(node, "href");
+        if (node.tagName === "SCRIPT") fix(node, "src");
+        if (node.tagName === "LINK") fix(node, "href");
+        if (node.querySelectorAll) scan(node);
+      }
+    }
+  });
+
+  function start() {
+    mo.observe(document.documentElement, { childList: true, subtree: true });
+    scan(document);
+    // 定时兜底扫描，覆盖 Observer 可能遗漏的场景
+    setInterval(function () { scan(document); }, 1500);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", start);
+  } else {
+    start();
+  }
+})();</script>`;
 }
 const REWORD_MARK = "cdn.jsdelivr.net/gh/watchern/reword"; // 幂等判断标记
 const SPA_FIX_MARK = "data-spa-link-fixer"; // SPA 死链修正脚本的幂等标记
@@ -305,7 +330,10 @@ function bodyReplace(content, base) {
     // --- 注入 SPA 死链修正脚本（服务端已改写的链接本来就是绝对地址，
     //     脚本只为 SPA 局部刷新后新插入的相对路径链接兜底）----
     if (!content.includes(SPA_FIX_MARK)) {
-      content = content.replace(RE_HEAD_END, buildSpaFixScript(base) + "</head>");
+      content = content.replace(
+        RE_HEAD_END,
+        buildSpaFixScript(base) + "</head>",
+      );
     }
   }
 
@@ -357,8 +385,8 @@ export default {
     const userAgentHeader = request.headers.get("User-Agent");
     const userAgent = userAgentHeader ? userAgentHeader.toLowerCase() : "null";
     if (
-      blockedCrawlerUA.some(
-        (blockedKeyword) => userAgent.includes(blockedKeyword),
+      blockedCrawlerUA.some((blockedKeyword) =>
+        userAgent.includes(blockedKeyword),
       ) &&
       blockedCrawlerUA.length > 0
     ) {
@@ -371,7 +399,7 @@ export default {
     }
     let path = urlObj.searchParams.get("q");
     if (path) {
-      path = path.replace('https://','')
+      path = path.replace("https://", "");
       return Response.redirect("https://" + visit_host + PREFIX + path, 301); // 重定向到带前缀的路径
     } else if (url.pathname.toLowerCase() == "/manifest.json") {
       // 站点自身的应用清单：GitHub 页面里的 <link rel="manifest" href="/manifest.json">
