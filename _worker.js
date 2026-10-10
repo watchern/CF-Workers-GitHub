@@ -8,6 +8,11 @@ const PREFIX = "/"; // 路由前缀
 // 分支文件使用jsDelivr镜像的开关，0为关闭，默认关闭
 const Config = {
   jsdelivr: 1, // 配置是否使用jsDelivr镜像
+  allowGit: 0, // 是否允许 git clone/fetch/push（0=拦截，1=放行）
+  // 个人 git 密钥：拦截开启时凭此仍可 git 操作；推荐在 CF Dashboard 环境变量
+  // GIT_KEYS 中设置（逗号分隔多个），本文件留空表示仅用环境变量。用法：
+  //   git clone https://git:<密钥>@gh.llim.qzz.io/https://github.com/user/repo.git
+  gitKeys: [],
 };
 // 获取当前访问的域名
 let visit_host = "";
@@ -405,6 +410,62 @@ export default {
       (/\/archive\/.+$/i.test(path) &&
         !/\/(?:blob|tree|blame|commits?|wiki)\//i.test(path) &&
         /\.(?:zip|tar\.gz|tgz|tar)(?:[?#].*)?$/i.test(path));
+    // git 协议拦截：git clone/fetch/push 的 HTTP 特征为 info/refs?service=git-*、
+    // git-upload-pack、git-receive-pack 四个端点，或 User-Agent 含 git/；
+    // Config.allowGit=1 时放行，默认拦截（无有效密钥返回 401 认证挑战，
+    // git 客户端会提示输入密钥，避免 403 让人误以为密钥错误）
+    const isGitOperation =
+      (/\/info\/refs$/i.test(urlObj.pathname) &&
+        /service=git-(?:upload|receive)-pack/i.test(urlObj.search)) ||
+      /\/(?:git-upload-pack|git-receive-pack)\/?$/i.test(urlObj.pathname) ||
+      (userAgent !== "null" &&
+        /^git\/(?:1|2)\./.test(userAgent) &&
+        !urlObj.searchParams.get("q"));
+    // 个人密钥穿透：git clone https://user:pass@域名/... 时客户端从首个请求起
+    // 会携带 HTTP Basic 认证头（内容即 clone URL 里的 user:token 凭据），
+    // 用户名或密码命中密钥列表（内置 gitKeys 或环境变量 GIT_KEYS）即放行；
+    // 放行后剥离该头再转发上游，否则 GitHub 会把它当无效 token 拒绝
+    const ownerKeys = Config.gitKeys.concat(
+      env.GIT_KEYS ? await parseUaList(env.GIT_KEYS) : [],
+    );
+    const basicAuth = request.headers.get("authorization") || "";
+    let isOwnerGit = false;
+    if (basicAuth.startsWith("Basic ") && ownerKeys.length > 0) {
+      try {
+        const decoded = atob(basicAuth.slice(6).trim());
+        const sep = decoded.indexOf(":");
+        isOwnerGit =
+          ownerKeys.includes(sep === -1 ? decoded : decoded.slice(0, sep)) ||
+          ownerKeys.includes(sep === -1 ? "" : decoded.slice(sep + 1));
+      } catch (e) {}
+    }
+    if (isGitOperation && !Config.allowGit) {
+      if (!isOwnerGit) {
+        const hasCreds = basicAuth.startsWith("Basic ");
+        // 匿名请求（含公共仓 clone）→ 403 纯文案，不弹凭据框，
+        // 避免用户误以为钓鱼站在索要 GitHub 账号密码；
+        // 带了凭据但密钥错 → 401 挑战让 git 重新提示（此时语境就是镜像密钥）
+        return new Response(
+          hasCreds
+            ? "invalid git access key."
+            : "git clone is not allowed anonymously on this mirror. Use: git clone https://<user>:<key>@this-mirror/... (contact the maintainer for a key)",
+          {
+            status: hasCreds ? 401 : 403,
+            headers: hasCreds
+              ? {
+                  "content-type": "text/plain; charset=utf-8",
+                  "www-authenticate":
+                    'Basic realm="git mirror", charset="UTF-8"',
+                }
+              : { "content-type": "text/plain; charset=utf-8" },
+          },
+        );
+      }
+      // 本人放行：剥掉密钥头，继续正常路由
+      const strippedHeaders = new Headers(request.headers);
+      strippedHeaders.delete("authorization");
+      request = new Request(request, { headers: strippedHeaders });
+    }
     if (isProxyDownload) {
       // 补全成完整 GitHub 直链，避免加速站无法解析：
       //  - 已带协议：原样；
@@ -418,12 +479,37 @@ export default {
       // 重定向到加速站；302 临时跳转，浏览器不缓存，重复点击可重新抽站
       return Response.redirect(pickProxySite() + path, 302);
     }
+    // raw 文件路由：必须先于通用代理链处理——
+    // 原实现里 jsDelivr 分支排在通用代理之后（RE_RAW_FILE 已被上方链路命中），
+    // 导致 jsdelivr 开关从未生效过。
+    // 开关开 → 302 至 jsDelivr；新版 /refs/heads|tags/ 路由先归一化为 @分支 形式；
+    // 开关关 → 走自身代理
+    if (path.search(RE_RAW_FILE) === 0) {
+      if (Config.jsdelivr) {
+        // 新版 /refs/heads|tags/ 路由与老格式 分支直写在路径中 的归一化规则互斥，
+        // 不能连续替换，否则会拼出 @@main 双 @ 坏地址
+        const jsdelivrUrl = /\/refs\/(?:heads|tags)\//i.test(path)
+          ? path
+              .replace(/\/refs\/(?:heads|tags)\//i, "@") // refs/heads/main → @main
+              .replace(
+                /^(?:https?:\/\/)?raw\.(?:githubusercontent|github)\.com/i,
+                "https://cdn.jsdelivr.net/gh",
+              )
+          : path
+              .replace(/(?<=com\/.+?\/.+?)\/(.+?\/)/, "@$1") // owner/repo/BRANCH/ → owner/repo@BRANCH/
+              .replace(
+                /^(?:https?:\/\/)?raw\.(?:githubusercontent|github)\.com/i,
+                "https://cdn.jsdelivr.net/gh",
+              );
+        return Response.redirect(jsdelivrUrl, 302);
+      }
+      return httpHandler(request, path);
+    }
     if (
       path.search(RE_GITHUB_REPO) === 0 ||
       path.search(RE_GIST_FILE) === 0 ||
       path.search(RE_GITHUB_TAGS) === 0 ||
-      path.search(RE_GIT_INFO) === 0 ||
-      path.search(RE_RAW_FILE) === 0
+      path.search(RE_GIT_INFO) === 0
     ) {
       return httpHandler(request, path); // 处理符合正则的请求
     } else if (path.search(RE_GITHUB_BLOB_RAW) === 0) {
@@ -439,14 +525,6 @@ export default {
         path = path.replace("/blob/", "/raw/"); // 修改路径为raw
         return httpHandler(request, path); // 处理修改后的请求
       }
-    } else if (path.search(RE_RAW_FILE) === 0) {
-      const jsdelivrUrl = path
-        .replace(/(?<=com\/.+?\/.+?)\/(.+?\/)/, "@$1")
-        .replace(
-          /^(?:https?:\/\/)?raw\.(?:githubusercontent|github)\.com/,
-          "https://cdn.jsdelivr.net/gh",
-        ); // 修改为jsDelivr镜像URL
-      return Response.redirect(jsdelivrUrl, 302); // 重定向到新的URL
     } else {
       if (env.URL302) {
         return Response.redirect(env.URL302, 302);
