@@ -1,6 +1,6 @@
 "use strict";
 
-let 屏蔽爬虫UA = ["netcraft"];
+let blockedCrawlerUA = ["netcraft"];
 
 // ---------------配置信息-------------
 // 前缀，如果自定义路由为example.com/gh/*，将PREFIX改为 '/gh/'，注意，少一个杠都会错！
@@ -39,21 +39,21 @@ const PREFLIGHT_INIT = {
   }),
 };
 
-const exp1 = /^(?:https?:\/\/)?github\.com\/.+?\/.*$/i;
+const RE_GITHUB_REPO = /^(?:https?:\/\/)?github\.com\/.+?\/.*$/i;
 // 匹配 GitHub的项目地址，例如 https://github.com/watchern/CF-Workers-GitHub
-const exp2 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:blob|raw)\/.*$/i;
+const RE_GITHUB_BLOB_RAW = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:blob|raw)\/.*$/i;
 // 匹配 GitHub的blob或raw路径
-const exp3 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:info|git-).*$/i;
+const RE_GIT_INFO = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:info|git-).*$/i;
 // 匹配 GitHub的info或git-路径
-const exp4 =
+const RE_RAW_FILE =
   /^(?:https?:\/\/)?raw\.(?:githubusercontent|github)\.com\/.+?\/.+?\/.+?\/.+$/i;
 // 匹配 raw.githubusercontent.com的路径
-const exp5 =
+const RE_GIST_FILE =
   /^(?:https?:\/\/)?gist\.(?:githubusercontent|github)\.com\/.+?\/.+?\/.+$/i;
 // 匹配 Gist的路径
-const exp6 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/tags.*$/i;
+const RE_GITHUB_TAGS = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/tags.*$/i;
 // 匹配 GitHub的tags路径
-const exp7 =
+const RE_GITHUB_COLLECTOR =
   /^(?:https?:\/\/)?collector\.(?:githubusercontent|github)\.com\/.+?\/.+?\/.+?\/.+$/i;
 // 匹配 collector.github.com的路径
 
@@ -72,7 +72,7 @@ function makeRes(body, status = 200, headers = {}) {
  * 创建URL对象
  * @param {string} urlStr - URL字符串
  */
-function newUrl(urlStr) {
+function parseUrl(urlStr) {
   try {
     return new URL(urlStr); // 尝试创建URL对象
   } catch (err) {
@@ -81,11 +81,19 @@ function newUrl(urlStr) {
 }
 
 /**
- * 检查URL是否匹配白名单中的正则表达式
+ * 检查URL是否属于 GitHub 系域名（用于决定重定向是否改写、还是由 Worker 内部跟随）
  * @param {string} u - 待检查的URL
  */
-function checkUrl(u) {
-  for (let i of [exp1, exp2, exp3, exp4, exp5, exp6]) {
+function isGithubishUrl(u) {
+  for (let i of [
+    RE_GITHUB_REPO,
+    RE_GITHUB_BLOB_RAW,
+    RE_GIT_INFO,
+    RE_RAW_FILE,
+    RE_GIST_FILE,
+    RE_GITHUB_TAGS,
+    RE_GITHUB_COLLECTOR,
+  ]) {
     if (u.search(i) === 0) {
       return true; // 如果匹配，返回true
     }
@@ -119,20 +127,20 @@ function httpHandler(req, pathname) {
   }
 
   let urlStr = pathname;
-  let flag = !Boolean(whiteList.length); // 如果白名单为空，默认允许
+  let inWhitelist = !Boolean(whiteList.length); // 如果白名单为空，默认允许
   for (let i of whiteList) {
     if (urlStr.includes(i)) {
-      flag = true; // 如果路径包含白名单中的任意项，允许请求
+      inWhitelist = true; // 如果路径包含白名单中的任意项，允许请求
       break;
     }
   }
-  if (!flag) {
+  if (!inWhitelist) {
     return new Response("blocked", { status: 403 }); // 不在白名单中，返回403
   }
   if (urlStr.search(/^https?:\/\//) !== 0) {
     urlStr = "https://" + urlStr; // 确保URL以https开头
   }
-  const urlObj = newUrl(urlStr);
+  const urlObj = parseUrl(urlStr);
 
   /** @type {RequestInit} */
   const reqInit = {
@@ -158,12 +166,12 @@ async function proxy(urlObj, reqInit) {
 
   if (resHdrNew.has("location")) {
     // 如果响应包含重定向
-    let _location = resHdrNew.get("location");
-    if (checkUrl(_location))
-      resHdrNew.set("location", PREFIX + _location); // 修改重定向URL
+    let redirectTarget = resHdrNew.get("location");
+    if (isGithubishUrl(redirectTarget))
+      resHdrNew.set("location", PREFIX + redirectTarget); // 修改重定向URL
     else {
       reqInit.redirect = "follow"; // 允许自动跟随重定向
-      return proxy(newUrl(_location), reqInit); // 递归处理新的重定向
+      return proxy(parseUrl(redirectTarget), reqInit); // 递归处理新的重定向
     }
   }
   resHdrNew.set("access-control-expose-headers", "*"); // 设置跨域暴露头
@@ -198,7 +206,64 @@ const RE_HREF_RELEASE =
 const RE_HREF_ROOTREL = /(\bhref\s*=\s*)(["'])\/(?!\/)/gi; // 根相对链接 href="/..."（排除协议相对 "//"）
 const REWORD_SCRIPT =
   '<script src="https://cdn.jsdelivr.net/gh/watchern/reword@master/i.js" type="text/javascript"></script>';
+// SPA 死链修正脚本：GitHub 是 SPA，局部刷新后新插入的链接会脱离镜像——
+// ① 相对路径 img/a 解析到镜像站自身形成死链；
+// ② 绝对 raw.githubusercontent.com / github.com 链接点击后直跳真实域名（国内无法访问）。
+// MutationObserver 持续监听 + 定时兜底扫描，把两类都改写为经本镜像代理的绝对地址。
+// 按请求构造（BASE 依赖当前访问域名），标记属性用于幂等判断
+function buildSpaFixScript(base) {
+  return (
+    '<script ' +
+    SPA_FIX_MARK +
+    '>' +
+    '(function(){' +
+    'var BASE=' +
+    JSON.stringify(base) +
+    ';' +
+    'function fix(el,attr){' +
+    'var v=el.getAttribute(attr);' +
+    'if(!v)return;' +
+    'if(v.charCodeAt(0)===47){' +
+    'if(v.charCodeAt(1)===47||v.slice(0,14)==="/_next/static/")return;' +
+    'var f1=BASE+"https://github.com"+v;' +
+    'if(v!==f1)el.setAttribute(attr,f1);' +
+    'return;' +
+    '}' +
+    'if(v.slice(0,8)==="https://"||v.slice(0,7)==="http://"){' +
+    'var rest=v.slice(v.indexOf("/")+2);' +
+    'if(rest.slice(0,26)==="raw.githubusercontent.com/"||rest.slice(0,11)==="github.com/"){var f2=BASE+v;if(v!==f2)el.setAttribute(attr,f2);}' +
+    'return;' +
+    '}' +
+    '}' +
+    'function scan(root){' +
+    'if(!root.querySelectorAll)return;' +
+    'var i,imgs=root.querySelectorAll("img[src]");' +
+    'for(i=0;i<imgs.length;i++)fix(imgs[i],"src");' +
+    'var links=root.querySelectorAll("a[href]");' +
+    'for(i=0;i<links.length;i++)fix(links[i],"href");' + '}' +
+    'var mo=new MutationObserver(function(ms){' +
+    'for(var k=0;k<ms.length;k++){' +
+    'var m=ms[k],n,node;' +
+    'for(n=0;n<m.addedNodes.length;n++){' +
+    'node=m.addedNodes[n];' +
+    'if(node.nodeType===1){' +
+    'if(node.tagName==="IMG")fix(node,"src");' +
+    'if(node.tagName==="A")fix(node,"href");' +
+    'if(node.querySelectorAll)scan(node);' + '}' + '}' + '}' +
+    '});' +
+    'function start(){' +
+    'mo.observe(document.documentElement,{childList:true,subtree:true});' +
+    'scan(document);' +
+    'setInterval(function(){scan(document);},1500);' +
+    '}' +
+    'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",start);}' +
+    'else{start();}' +
+    '})();' +
+    '</script>'
+  );
+}
 const REWORD_MARK = "cdn.jsdelivr.net/gh/watchern/reword"; // 幂等判断标记
+const SPA_FIX_MARK = "data-spa-link-fixer"; // SPA 死链修正脚本的幂等标记
 
 /**
  * 改写上游 HTML：资源链接改走本代理，并在 </head> 前注入打赏脚本
@@ -230,6 +295,12 @@ function bodyReplace(content, base) {
     // --- 引入打赏脚本（已注入则跳过，避免重复代理时叠加）----
     if (!content.includes(REWORD_MARK)) {
       content = content.replace(RE_HEAD_END, `${REWORD_SCRIPT}</head>`);
+    }
+
+    // --- 注入 SPA 死链修正脚本（服务端已改写的链接本来就是绝对地址，
+    //     脚本只为 SPA 局部刷新后新插入的相对路径链接兜底）----
+    if (!content.includes(SPA_FIX_MARK)) {
+      content = content.replace(RE_HEAD_END, buildSpaFixScript(base) + "</head>");
     }
   }
 
@@ -276,12 +347,15 @@ export default {
     // 获取当前访问的域名
     visit_host = urlObj.host;
 
-    if (env.UA) 屏蔽爬虫UA = 屏蔽爬虫UA.concat(await ADD(env.UA));
+    if (env.UA)
+      blockedCrawlerUA = blockedCrawlerUA.concat(await parseUaList(env.UA));
     const userAgentHeader = request.headers.get("User-Agent");
     const userAgent = userAgentHeader ? userAgentHeader.toLowerCase() : "null";
     if (
-      屏蔽爬虫UA.some((fxxk) => userAgent.includes(fxxk)) &&
-      屏蔽爬虫UA.length > 0
+      blockedCrawlerUA.some(
+        (blockedKeyword) => userAgent.includes(blockedKeyword),
+      ) &&
+      blockedCrawlerUA.length > 0
     ) {
       // 首页改成一个nginx伪装页
       return new Response(await nginx(), {
@@ -345,34 +419,34 @@ export default {
       return Response.redirect(pickProxySite() + path, 302);
     }
     if (
-      path.search(exp1) === 0 ||
-      path.search(exp5) === 0 ||
-      path.search(exp6) === 0 ||
-      path.search(exp3) === 0 ||
-      path.search(exp4) === 0
+      path.search(RE_GITHUB_REPO) === 0 ||
+      path.search(RE_GIST_FILE) === 0 ||
+      path.search(RE_GITHUB_TAGS) === 0 ||
+      path.search(RE_GIT_INFO) === 0 ||
+      path.search(RE_RAW_FILE) === 0
     ) {
       return httpHandler(request, path); // 处理符合正则的请求
-    } else if (path.search(exp2) === 0) {
+    } else if (path.search(RE_GITHUB_BLOB_RAW) === 0) {
       if (Config.jsdelivr) {
-        const newUrl = path
+        const jsdelivrUrl = path
           .replace("/blob/", "@")
           .replace(
             /^(?:https?:\/\/)?github\.com/,
             "https://cdn.jsdelivr.net/gh",
           ); // 使用jsDelivr镜像
-        return Response.redirect(newUrl, 302); // 重定向到jsDelivr
+        return Response.redirect(jsdelivrUrl, 302); // 重定向到jsDelivr
       } else {
         path = path.replace("/blob/", "/raw/"); // 修改路径为raw
         return httpHandler(request, path); // 处理修改后的请求
       }
-    } else if (path.search(exp4) === 0) {
-      const newUrl = path
+    } else if (path.search(RE_RAW_FILE) === 0) {
+      const jsdelivrUrl = path
         .replace(/(?<=com\/.+?\/.+?)\/(.+?\/)/, "@$1")
         .replace(
           /^(?:https?:\/\/)?raw\.(?:githubusercontent|github)\.com/,
           "https://cdn.jsdelivr.net/gh",
         ); // 修改为jsDelivr镜像URL
-      return Response.redirect(newUrl, 302); // 重定向到新的URL
+      return Response.redirect(jsdelivrUrl, 302); // 重定向到新的URL
     } else {
       if (env.URL302) {
         return Response.redirect(env.URL302, 302);
@@ -705,7 +779,8 @@ async function githubInterface() {
   return html;
 }
 
-async function ADD(envadd) {
+// 解析环境变量中的 UA 黑名单字符串（支持空格/引号/换行分隔）为数组
+async function parseUaList(envadd) {
   var addtext = envadd.replace(/[	 |"'\r\n]+/g, ",").replace(/,+/g, ","); // 将空格、双引号、单引号和换行符替换为逗号
   if (addtext.charAt(0) == ",") addtext = addtext.slice(1);
   if (addtext.charAt(addtext.length - 1) == ",")
